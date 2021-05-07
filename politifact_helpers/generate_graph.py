@@ -8,7 +8,7 @@ from multiprocessing import Manager, Pool
 
 in_dir = '/rwproject/kdd-db/20-rayw1/FakeNewsNet/code/fakenewsnet_dataset'
 out_dir = '/rwproject/kdd-db/20-rayw1/FakeNewsNet/graph_def'
-datasets = ['politifact'] #, 'gossipcop']
+datasets = ['gossipcop']  # 'politifact'
 subsets = ['fake', 'real']
 num_process = 4
 

@@ -16,11 +16,12 @@ dls = os.listdir(in_dir)
 dls = [e for e in dls if e.startswith('data_collection_') and e.endswith('.log')]
 
 again = {
+}
+not_again = {
     "twython.exceptions.TwythonError: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))" : 0,
     'twython.exceptions.TwythonError: Twitter API returned a 500 (Internal Server Error), Internal error' : 0,
     "twython.exceptions.TwythonError: Twitter API returned a 503" : 0,
-}
-not_again = {
+    
     "twython.exceptions.TwythonError: HTTPSConnectionPool(host='api.twitter.com', port=443): Max retries exceeded with url:" : 0,
     "twython.exceptions.TwythonError: HTTPSConnectionPool(host='api.twitter.com', port=443): Read timed out. (read timeout=" : 0,
     'twython.exceptions.TwythonError: Twitter API returned a 403 (Forbidden), Forbidden.' : 0,

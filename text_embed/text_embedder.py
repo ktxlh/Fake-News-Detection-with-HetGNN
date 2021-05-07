@@ -70,7 +70,7 @@ class TextEmbedder(torch.nn.Module):
         if self.model_name == 'word2vec':
             tokens = [self.tokenizer.tokenize(text)[1: 1 + self.max_seq_len] for text in text_list]
             tokens = [[token.replace('▁', '') for token in doc] for doc in tokens]  # NOTE '▁' and '_' (underscore) are different
-            oututs = self._w2v_embed(tokens)
+            outputs = self._w2v_embed(tokens)
         else:
             inputs = self.tokenizer(text_list, return_tensors="pt", max_length=self.max_seq_len, padding='max_length', truncation=True)
             inputs = {k : v.to(self.device) for k, v in inputs.items()}

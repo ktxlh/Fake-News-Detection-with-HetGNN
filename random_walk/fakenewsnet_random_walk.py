@@ -49,34 +49,16 @@ output_dir = f"rwr_results/{configuration_tag}"
 # global
 adj_list = dict()  # IN  adj_list['p123'] = ['u456', 'n789', ...]
 
-def update_involved_recursively(nei_list, rank = -1):
-    if len(nei_list) == 0:
-        return {t : set() for t in node_types}
-    nodes = list(nei_list.keys())
-    if rank == 0:
-        pbar = tqdm(total=len(nei_list) * 2 - 1, desc='update_involved')
-    def recursion(lidx, ridx):
-        # speedup intuition: ∑_{i=1...2^3} log(i) < ∑_{i=0...k} 2^i * log(2^{k-i})
-        # nei_list is pass-by-ref; nodes are in [lidx, ridx)
-        involved = dict()
-        if ridx - lidx == 1:
-            for t, nl in nei_list[nodes[lidx]].items():
-                involved[t] = set(nl)
-            involved[nodes[lidx][0]].add(nodes[lidx])
-        else:
-            m = (ridx + lidx) // 2
-            l = recursion(lidx, m)
-            r = recursion(m, ridx)
-            for t in node_types:
-                involved[t] = l[t].union(r[t])
-        if rank == 0:
-            pbar.update(1)
-        return involved
-    if rank == 0:
-        pbar.close()
-    return recursion(0, len(nei_list))
+def recompute_involved(nei_list):
+    involved = {t : set() for t in node_types}
+    for node_1, nei_d in tqdm(nei_list.items(), desc='recompute involved'):
+        involved[node_1[0]].add(node_1)
+        for nodes in nei_d.values():
+            for node_2 in nodes:
+                involved[node_2[0]].add(node_2)
+    return involved
 
-def rwr_worker(start_node, nei_list_subsets, involved_subsets, desc, j, nodes_len):
+def rwr_worker(start_node, nei_list_subsets, desc, j, nodes_len):
     nei_list = {start_node : {t : [] for t in node_types}}  # OUT nei_list['p123']['u'] = ['u456', 'u789', ...]
 
     def try_add_neighbor(start_node, cur_node, num_neighs):
@@ -122,17 +104,8 @@ def rwr_worker(start_node, nei_list_subsets, involved_subsets, desc, j, nodes_le
         steps += 1
     write_neighbor(start_node)
     
-    involved = update_involved_recursively(nei_list)
     nei_list_subsets.append(nei_list)
-    involved_subsets.append(involved)
     print(desc, '{:7} {:7} {:.4}'.format(j, nodes_len, j/nodes_len))
-
-def update_involved_worker(nei_list, involved_subsets, i, total):
-    # each process has its own subset of nei_list
-    involved = update_involved_recursively(nei_list)
-    involved_subsets.append(involved)
-    if i % 100 == 0:
-        print('update_involved_worker {:7}/{:7} {:.4}'.format(i, total, i/total))
 
 def save_result_worker(nei_list, involved, t, return_dict):
     written = 0
@@ -156,7 +129,7 @@ def save_result_worker(nei_list, involved, t, return_dict):
     return_dict[t] = ret_str
 
 def random_walk_with_restart():
-    nei_list, involved, nodes = dict(), dict(), dict()
+    nei_list, nodes = dict(), dict()
     nodes = {t : set() for t in node_types}     # IN  nodes['p'] = {'p123', 'p456', ...}
     involved = {t : set() for t in node_types}  # OUT involved['p'] = {'p123', 'p456', ...}
     manager = Manager()
@@ -179,55 +152,31 @@ def random_walk_with_restart():
             return l
         return _update_nei_list_subsets_recusion(0, len(nei_list_subsets))
 
-    def update_involved_subsets_recursive(involveds):
-        def _update_involved_subsets_recursion(lidx, ridx):  # [lidx, ridx) 
-            if ridx - lidx == 0:
-                return {t : {} for t in node_types}
-            if ridx - lidx == 1:
-                return involveds[lidx]
-            midx = (lidx + ridx) // 2
-            l = _update_involved_subsets_recursion(lidx, midx)
-            r = _update_involved_subsets_recursion(midx, ridx)
-            for t in node_types:
-                l[t] = l[t].union(r[t])
-            return l
-        return _update_involved_subsets_recursion(0, len(involveds))
-
     def rwr(nodes_set, desc):
         nodes_list = list(nodes_set)
-        nei_list_subsets, involved_subsets = manager.list(), manager.list()
+        nei_list_subsets = manager.list()
         with Pool(num_process) as p:
-            p.starmap(rwr_worker, [(nodes_list[i], nei_list_subsets, involved_subsets, desc, i, len(nodes_list)) for i in range(len(nodes_list))])
+            p.starmap(rwr_worker, [(nodes_list[i], nei_list_subsets, desc, i, len(nodes_list)) for i in range(len(nodes_list))])
         nei_list.update(update_nei_list_subsets_recusive(nei_list_subsets))
-        unioned_involved = update_involved_subsets_recursive(involved_subsets)
-        for t in node_types:
-            involved[t] = involved[t].union(unioned_involved[t])
-
-    def update_involved():
-        keys = list(nei_list.keys())
-        involved_subsets = manager.list()
-        with Pool(num_process) as p:
-            p.starmap(update_involved_worker, [({keys[i]:nei_list[keys[i]]}, involved_subsets, i, len(keys)) for i in range(len(keys))])
-        unioned_involved = update_involved_subsets_recursive(involved_subsets)
-        for t in node_types:
-            involved[t] = involved[t].union(unioned_involved[t])
     
     def compute_stats():
         stats = {t1: {t2: [] for t2 in node_types} for t1 in node_types}
         for n1, v in tqdm(nei_list.items(), desc='compute_stats'):
             for t2, x in v.items():
                 stats[n1[0]][t2].append(len(x))
+        stats_str = []
         for t1 in node_types:
             for t2 in node_types:
-                print('stats', t1, t2, '{:.6f}'.format(
+                stats_str.append('stats {} {} {:.6f}'.format(
+                    t1, t2,
                     sum(stats[t1][t2]) / len(stats[t1][t2]) if len(stats[t1][t2]) > 0 else 0))
+        return stats_str
     
     def save_result():
         return_dict = manager.dict()
         with Pool(len(node_types)) as p:
             p.starmap(save_result_worker, [(nei_list, involved, t, return_dict) for t in node_types])
-        for ret_str in return_dict.values():
-            print(ret_str)
+        return [_ for _ in return_dict.values()]
 
     print("Read the graph...")
     edge_dir = os.path.join(in_dir, dataset)
@@ -245,13 +194,20 @@ def random_walk_with_restart():
 
     print("Each node takes turns to be the starting node...")
     rwr(nodes['n'], 'news rwr')
+    involved = recompute_involved(nei_list)
     rwr(involved['p'], 'post rwr')
+    involved = recompute_involved(nei_list)
     rwr(involved['u'], 'user rwr')
-    update_involved()
+    involved = recompute_involved(nei_list)
 
     print("Save the result...")
-    save_result()
-    compute_stats()
+    strs = []
+    strs.extend(save_result())
+    strs.extend(compute_stats())
+    for s in strs:
+        print(s)
+    with open(os.path.join(output_dir, f'stats.txt'), 'w') as f:
+        f.write('\n'.join(strs) + '\n')
 
 
 if __name__ == "__main__":
