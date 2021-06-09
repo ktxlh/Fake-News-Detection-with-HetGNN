@@ -2,11 +2,12 @@
 * All edges are undirected.
 * All IDs are string.
 """
+import torch
 import random
+from collections import Counter
 from tqdm import tqdm
 import os
 from multiprocessing import Manager, Pool
-from collections import defaultdict
 
 def recompute_involved(nei_list):
     involved = {t : set() for t in node_types}
@@ -23,7 +24,7 @@ def recompute_involved(nei_list):
                 involved[node_2[0]].add(node_2)
     return involved
 
-def rwr_worker(start_node, nei_list_subsets, desc, j, nodes_len):
+def rwr_worker(start_node, nei_list_subsets, desc, j, nodes_len, typed_rwr, no_rwr, max_steps, max_neigh, restart_rate, adj_list):
     # typed_rwr=True  -> OUT nei_list['p123']['u'] = ['u456', 'u789', ...]
     # typed_rwr=False -> OUT nei_list['p123'] = ['u456', 'n789', ...]
     nei_list = {start_node : {t : [] for t in node_types}} if typed_rwr \
@@ -42,9 +43,7 @@ def rwr_worker(start_node, nei_list_subsets, desc, j, nodes_len):
             return num_neighs
 
     def get_top_k_most_frequent(neighbors, k, exclude):
-        counter = defaultdict(int)
-        for node in neighbors:
-            counter[node] += 1
+        counter = Counter(neighbors)
         counter.pop(exclude, None)
         items = sorted(list(counter.items()), key=lambda x: -x[1])
         neighbors[:] = [items[i][0] for i in range(min(k, len(items)))]
@@ -61,21 +60,19 @@ def rwr_worker(start_node, nei_list_subsets, desc, j, nodes_len):
                 get_top_k_most_frequent(nei_list[node][nn], max_uniq_neigh[nn], exclude=node)
                 if (node[0], nn) in edges_to_enforce or (nn, node[0]) in edges_to_enforce:
                     enforce_edges(nei_list[node][nn], node, nn, max_uniq_neigh[nn])
-        elif sensitivity_test:
-            return
         else:
             get_top_k_most_frequent(nei_list[node], max_neigh, exclude=node)
     
     num_neighs = 0
     if no_rwr:
-        if len(adj_list[start_node]) <= max_num_neighs:
+        if len(adj_list[start_node]) <= max_neigh:
             nei_list[start_node] = adj_list[start_node]
         else:
-            nei_list[start_node] = random.sample(adj_list[start_node], max_num_neighs)
+            nei_list[start_node] = random.sample(adj_list[start_node], max_neigh)
     else:
         cur_node = start_node
         steps = 0
-        while steps < max_steps and num_neighs < max_num_neighs:
+        while steps < max_steps:
             rand_p = random.random()
             if rand_p < restart_rate:
                 cur_node = start_node
@@ -137,7 +134,7 @@ def random_walk_with_restart():
         nodes_list = list(nodes_set)
         nei_list_subsets = manager.list()
         with Pool(num_process) as p:
-            p.starmap(rwr_worker, [(nodes_list[i], nei_list_subsets, desc, i, len(nodes_list)) for i in range(len(nodes_list))])
+            p.starmap(rwr_worker, [(nodes_list[i], nei_list_subsets, desc, i, len(nodes_list), typed_rwr, no_rwr, max_steps, max_neigh, restart_rate, adj_list) for i in range(len(nodes_list))])
         update_nei_list_subsets(nei_list, nei_list_subsets)
     
     def compute_stats():
@@ -190,78 +187,80 @@ def random_walk_with_restart():
 
 if __name__ == "__main__":
     max_steps = 10000
-    max_num_neighs = 200
+    max_neigh = 512
     num_process = 16
     restart_rate = 0.5
     # dataset = 'politifact'  # 'politifact', 'pheme', 'buzzfeed'
 
-    typed_rwr = False
-    sensitivity_test = True
     no_rwr = False
+    typed_rwr = False
+    sensitivity_test = False
     assert sum([typed_rwr, sensitivity_test, no_rwr]) <= 1  # Choose at most one mode
 
-    for max_steps in [2 ** i for i in range(1, 8, 1)]:
-        for dataset in ['pheme', 'politifact', 'gossipcop']:
-            if dataset in ['politifact', 'gossipcop']:
-                prefix = f'fnn_{dataset}_'
+    # for max_steps in [2 ** i for i in range(1, 8, 1)]:
+    for dataset in ['gossipcop',]:# 'gossipcop', 'pheme', 'politifact', 
+        if dataset in ['politifact', 'gossipcop']:
+            prefix = f'fnn_{dataset}_'
+            if torch.cuda.is_available():
                 in_dir = '/rwproject/kdd-db/20-rayw1/FakeNewsNet/graph_def'
-                edge_dir = os.path.join(in_dir, dataset)
-                node_types = ['n', 'p', 'u']
-                edge_files = {
-                    ('n', 'n'): 'news-news edges.txt',
-                    ('n', 'p'): 'news-post edges.txt',
-                    ('p', 'u'): 'post-user edges.txt',
-                    ('u', 'u'): 'user-user edges.txt',
-                }
-                edges_to_enforce = {('p', 'u'),}
-            elif dataset == 'pheme':
-                prefix = 'pheme_'
-                in_dir = '/rwproject/kdd-db/20-rayw1/pheme-figshare'
-                edge_dir = in_dir
-                node_types = ['n', 'p', 'u']
-                edge_files = {
-                    # ('n', 'n'): 'PhemeNewsNews.txt',
-                    ('n', 'p'): 'PhemeNewsPost.txt',
-                    ('n', 'u'): 'PhemeNewsUser.txt',
-                    ('p', 'p'): 'PhemePostPost.txt',
-                    ('p', 'u'): 'PhemePostUser.txt',
-                    ('u', 'u'): 'PhemeUserUser.txt',
-                }
-                edges_to_enforce = {('n', 'u'), ('p', 'u'),}
-            elif dataset == 'buzzfeed':
-                prefix = 'buzzfeed_'
-                in_dir = '/rwproject/kdd-db/20-rayw1/buzzfeed-kaggle'
-                edge_dir = in_dir
-                node_types = ['n', 's', 'u']
-                edge_files = {
-                    ('s', 'n'): 'BuzzFeedSourceNews.txt',
-                    ('n', 'n'): 'BuzzFeedNewsNews.txt',
-                    ('n', 'u'): 'BuzzFeedNewsUser.txt',
-                    ('u', 'u'): 'BuzzFeedUserUser.txt',
-                }
-                edges_to_enforce = {('n', 'u'),}
-            else:  # "weibo"
-                raise NotImplementedError
-
-            if typed_rwr:
-                min_neigh = {node_type: 1000 if node_type == 'u' else 50 for node_type in node_types}
-                max_uniq_neigh = {node_type: 100 if node_types == 'u' else 5 for node_type in node_types}
-                configuration_tag = prefix + '_'.join([f'{k}{max_uniq_neigh[k]}' for k in node_types])
-            elif sensitivity_test:
-                configuration_tag = prefix + f'step{max_steps}'
-            elif no_rwr:
-                configuration_tag = prefix + f'norwr'
             else:
-                max_neigh = 200
-                configuration_tag = prefix + f'{max_neigh}'
+                in_dir = '/Users/shanglinghsu/Workspaces/fyp/graph_def'
+            edge_dir = os.path.join(in_dir, dataset)
+            node_types = ['n', 'p', 'u']
+            edge_files = {
+                ('n', 'n'): 'news-news edges.txt',
+                ('n', 'p'): 'news-post edges.txt',
+                ('p', 'u'): 'post-user edges.txt',
+                ('u', 'u'): 'user-user edges.txt',
+            }
+            edges_to_enforce = {('p', 'u'),}
+        elif dataset == 'pheme':
+            prefix = 'pheme_'
+            in_dir = '/rwproject/kdd-db/20-rayw1/pheme-figshare'
+            edge_dir = in_dir
+            node_types = ['n', 'p', 'u']
+            edge_files = {
+                # ('n', 'n'): 'PhemeNewsNews.txt',
+                ('n', 'p'): 'PhemeNewsPost.txt',
+                ('n', 'u'): 'PhemeNewsUser.txt',
+                ('p', 'p'): 'PhemePostPost.txt',
+                ('p', 'u'): 'PhemePostUser.txt',
+                ('u', 'u'): 'PhemeUserUser.txt',
+            }
+            edges_to_enforce = {('n', 'u'), ('p', 'u'),}
+        elif dataset == 'buzzfeed':
+            prefix = 'buzzfeed_'
+            in_dir = '/rwproject/kdd-db/20-rayw1/buzzfeed-kaggle'
+            edge_dir = in_dir
+            node_types = ['n', 's', 'u']
+            edge_files = {
+                ('s', 'n'): 'BuzzFeedSourceNews.txt',
+                ('n', 'n'): 'BuzzFeedNewsNews.txt',
+                ('n', 'u'): 'BuzzFeedNewsUser.txt',
+                ('u', 'u'): 'BuzzFeedUserUser.txt',
+            }
+            edges_to_enforce = {('n', 'u'),}
+        else:  # "weibo"
+            raise NotImplementedError
 
-            output_dir = f"rwr_results/{configuration_tag}"
+        if typed_rwr:
+            min_neigh = {node_type: 1000 if node_type == 'u' else 50 for node_type in node_types}
+            max_uniq_neigh = {node_type: 100 if node_types == 'u' else 5 for node_type in node_types}
+            configuration_tag = prefix + '_'.join([f'{k}{max_uniq_neigh[k]}' for k in node_types])
+        elif no_rwr:
+            configuration_tag = prefix + f'norwr'
+        elif sensitivity_test:
+            configuration_tag = prefix + f'step{max_steps}'
+        else:
+            configuration_tag = prefix + f'{max_neigh}'
 
-            adj_list = dict()  # IN  adj_list['p123'] = ['u456', 'n789', ...]
+        output_dir = f"rwr_results/{configuration_tag}"
 
-            if not os.path.isdir(output_dir):
-                os.mkdir(output_dir)
+        adj_list = dict()  # IN  adj_list['p123'] = ['u456', 'n789', ...]
 
-            print("\n" + "- " * 10 + configuration_tag + " -" * 10 + "\n")
-            print('Files output to', output_dir)
-            random_walk_with_restart()
+        if not os.path.isdir(output_dir):
+            os.mkdir(output_dir)
+
+        print("\n" + "- " * 10 + configuration_tag + " -" * 10 + "\n")
+        print('Files output to', output_dir)
+        random_walk_with_restart()
