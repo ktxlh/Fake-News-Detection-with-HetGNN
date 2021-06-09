@@ -14,6 +14,7 @@ out_dir = '/Users/shanglinghsu/Workspaces/fyp/pheme-figshare'
 node_files = {
 }
 edge_files = {
+    ('n', 'n'): 'PhemeNewsNews.txt',
     ('n', 'p'): 'PhemeNewsPost.txt',
     ('n', 'u'): 'PhemeNewsUser.txt',
     ('p', 'p'): 'PhemePostPost.txt',
@@ -33,8 +34,11 @@ def process():
         if len(tree) == 0:
             return
         for child, subtree in tree.items():
-            edges[('n' if level == 0 else 'p', 'p')][(root, child)] += 1
-            edges[('n' if level == 0 else 'p', 'p')][(child, root)] += 1
+            if level == 0:
+                edges[('n', 'p')][(root, child)] += 1
+            else:
+                edges[('p', 'p')][(root, child)] += 1
+                edges[('p', 'p')][(child, root)] += 1
             write_edges_from_structure(child, subtree, level + 1)
         
     def write_user_edges(folder, tweet_fname, tweet_type):
@@ -51,12 +55,14 @@ def process():
     edges = {k : defaultdict(int) for k in edge_files.keys()}
 
     for event_raw in listdir(in_dir):
-        if event_raw == '.DS_Store': continue
+        if not event_raw.endswith('-all-rnr-threads'): continue
         # {event}-all-rnr-threads
         event = event_raw[:-16]
+        same_event_news = set()
         for rumority in ['non-rumours', 'rumours']:
             for news_id in tqdm(listdir(join(in_dir, event_raw, rumority)), desc=f'{event}-{rumority}'):
                 if news_id == '.DS_Store': continue
+                same_event_news.add(news_id)
                 news_root = join(in_dir, event_raw, rumority, news_id)
                 # n-p, p-p
                 structure = load(open(join(news_root, 'structure.json'), 'r'))
@@ -67,6 +73,9 @@ def process():
                 for tweet_file_name in listdir(join(news_root, 'reactions')):
                     if tweet_file_name == '.DS_Store': continue
                     write_user_edges('reactions', tweet_file_name, 'p')
+        for news_id_1 in same_event_news:
+            for news_id_2 in same_event_news:
+                edges[('n', 'n')][news_id_1, news_id_2] += 1
 
     for k, v in edge_files.items():
         write_edge(edges[k], v)
